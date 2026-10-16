@@ -1,4 +1,5 @@
 import { strFromU8, unzipSync } from "fflate";
+import { mainParagraphs } from "./source-locations";
 import type {
   DocumentModel,
   Paragraph,
@@ -192,9 +193,7 @@ export function parseDocx(data: Uint8Array, name: string): DocumentModel {
     }
     return false;
   };
-  const elements = Array.from(body.getElementsByTagNameNS(W, "p")).filter(
-    (el) => !hidden(el),
-  );
+  const elements = mainParagraphs(body);
   if (elements.length > 5000)
     throw new Error("Tài liệu vượt giới hạn 5.000 đoạn của prototype.");
   const paragraphs: Paragraph[] = elements.map((p, index) => {

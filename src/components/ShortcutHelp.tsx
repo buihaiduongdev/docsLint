@@ -74,7 +74,7 @@ export function ShortcutHelp({
           </dd>
         </div>
         <div>
-          <dt>Đóng trợ giúp</dt>
+          <dt>Đóng trợ giúp / thu gọn vùng đọc</dt>
           <dd>
             <kbd>Esc</kbd>
           </dd>

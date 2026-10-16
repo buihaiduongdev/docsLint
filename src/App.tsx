@@ -23,10 +23,10 @@ import {
   RotateCcw,
   Search,
   Settings2,
-  ShieldCheck,
   SlidersHorizontal,
   Upload,
   X,
+  EyeOff,
 } from "lucide-react";
 import { createConfig, lint, parseConfig } from "./core/engine";
 import type {
@@ -37,12 +37,19 @@ import type {
   RuleSetting,
 } from "./core/types";
 import { parseDocx } from "./parser/docx";
+import { getPreviewParagraph } from "./parser/preview";
+import {
+  diagnosticKey,
+  documentKey,
+  readIgnored,
+  saveIgnored,
+} from "./core/ignored";
 import { plugins } from "./plugins";
 import { DocumentPane } from "./components/DocumentPane";
 import { ShortcutHelp } from "./components/ShortcutHelp";
 
 type View = "review" | "rules" | "plugins";
-type Filter = "all" | "error" | "warning";
+type Filter = "all" | "error" | "warning" | "ignored";
 const initialConfig = () => {
   try {
     const saved = localStorage.getItem("docslint-config-v1");
@@ -68,6 +75,10 @@ function App() {
   const [view, setView] = useState<View>("review");
   const [doc, setDoc] = useState<DocumentModel | null>(null);
   const [isSample, setIsSample] = useState(false);
+  const [source, setSource] = useState<ArrayBuffer | null>(null);
+  const [fileKey, setFileKey] = useState("");
+  const [ignoredKeys, setIgnoredKeys] = useState<Set<string>>(new Set());
+  const [readerExpanded, setReaderExpanded] = useState(false);
   const [config, setConfig] = useState<LintConfig>(initialConfig);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -82,9 +93,15 @@ function App() {
   const fileInput = useRef<HTMLInputElement>(null);
   const presetInput = useRef<HTMLInputElement>(null);
   const operation = useRef(0);
-  const issues = useMemo(
+  const allIssues = useMemo(
     () => (doc ? lint(doc, plugins, config) : []),
     [doc, config],
+  );
+  const ignoredIssues = allIssues.filter((issue) =>
+    ignoredKeys.has(diagnosticKey(issue)),
+  );
+  const issues = allIssues.filter(
+    (issue) => !ignoredKeys.has(diagnosticKey(issue)),
   );
   const errors = issues.filter((i) => i.severity === "error").length;
   const warnings = issues.length - errors;
@@ -95,14 +112,14 @@ function App() {
         )
       : [],
   ).length;
-  const visible = issues.filter(
+  const visible = (filter === "ignored" ? ignoredIssues : issues).filter(
     (i) =>
-      (filter === "all" || i.severity === filter) &&
+      (filter === "all" || filter === "ignored" || i.severity === filter) &&
       `${i.message} ${i.ruleId} ${doc?.paragraphs.find((p) => p.id === i.nodeId)?.text}`
         .toLocaleLowerCase("vi")
         .includes(search.toLocaleLowerCase("vi")),
   );
-  const selectedIssue = issues.find((i) => i.id === selected);
+  const selectedIssue = allIssues.find((i) => i.id === selected);
   const selectedIndex = visible.findIndex((issue) => issue.id === selected);
   const reviewing = view === "review" && !!doc;
 
@@ -144,7 +161,11 @@ function App() {
         new Uint8Array(bytes),
         file?.name ?? "Báo cáo nghiên cứu.docx",
       );
+      const key = await documentKey(bytes);
       if (operation.current !== token) return;
+      setSource(bytes);
+      setFileKey(key);
+      setIgnoredKeys(readIgnored(key));
       setDoc(parsed);
       setIsSample(!file);
       setView("review");
@@ -171,8 +192,8 @@ function App() {
         .matches
         ? "auto"
         : "smooth";
-      const el = document.getElementById(`doc-${nodeId}`);
-      const container = el?.closest(".document-preview");
+      const el = getPreviewParagraph(nodeId);
+      const container = document.querySelector(".document-preview");
       if (el && container && window.innerWidth >= 1100) {
         container.scrollTo({
           top:
@@ -223,6 +244,10 @@ function App() {
         fileInput.current?.click();
         return;
       }
+      if (event.key === "Escape" && readerExpanded) {
+        setReaderExpanded(false);
+        return;
+      }
       if (editing) return;
       if (event.key === "?" && !event.ctrlKey && !event.metaKey) {
         event.preventDefault();
@@ -248,6 +273,23 @@ function App() {
       setFocusedNode(null);
     }
   }, [selected, visible]);
+
+  const toggleIgnored = (issue: Diagnostic) => {
+    const key = diagnosticKey(issue);
+    const next = new Set(ignoredKeys);
+    const restoring = next.has(key);
+    if (restoring) next.delete(key);
+    else next.add(key);
+    setIgnoredKeys(next);
+    const saved = saveIgnored(fileKey, next);
+    setNotice(
+      saved
+        ? restoring
+          ? "Đã khôi phục vấn đề."
+          : "Đã bỏ qua. Bạn có thể khôi phục trong Đã bỏ qua."
+        : "Đã cập nhật trong phiên này; trình duyệt không cho phép lưu lựa chọn.",
+    );
+  };
 
   const changeRule = (
     id: string,
@@ -281,7 +323,9 @@ function App() {
   };
 
   return (
-    <div className={`app-shell ${reviewing ? "is-reviewing" : ""}`}>
+    <div
+      className={`app-shell ${reviewing ? "is-reviewing" : ""} ${reviewing && readerExpanded ? "reading-expanded" : ""}`}
+    >
       <a href="#main-content" className="skip-link">
         Đến nội dung chính
       </a>
@@ -554,7 +598,12 @@ function App() {
                         onClick={() =>
                           download(
                             `${doc.name.replace(/\.docx$/i, "")}-lint.json`,
-                            { document: doc.name, config, issues },
+                            {
+                              document: doc.name,
+                              config,
+                              issues,
+                              ignoredIssues,
+                            },
                           )
                         }
                       >
@@ -562,81 +611,12 @@ function App() {
                       </button>
                     </div>
                   </div>
-                  <section
-                    className="stats-grid"
-                    aria-label="Tổng quan kết quả"
-                  >
-                    <div className="stat-card">
-                      <div className="stat-icon neutral">
-                        <ListChecks size={21} />
-                      </div>
-                      <div>
-                        <span>Tổng vấn đề</span>
-                        <strong>
-                          {issues.length}
-                          <small>cần rà soát</small>
-                        </strong>
-                      </div>
-                      <span className="stat-decoration">/</span>
-                    </div>
-                    <button
-                      className={`stat-card clickable ${filter === "error" ? "stat-active" : ""}`}
-                      onClick={() =>
-                        setFilter(filter === "error" ? "all" : "error")
-                      }
-                    >
-                      <div className="stat-icon danger">
-                        <CircleAlert size={21} />
-                      </div>
-                      <div>
-                        <span>Lỗi cần sửa</span>
-                        <strong>
-                          {errors}
-                          <small>cần chỉnh sửa</small>
-                        </strong>
-                      </div>
-                    </button>
-                    <button
-                      className={`stat-card clickable ${filter === "warning" ? "stat-active" : ""}`}
-                      onClick={() =>
-                        setFilter(filter === "warning" ? "all" : "warning")
-                      }
-                    >
-                      <div className="stat-icon warning">
-                        <Info size={21} />
-                      </div>
-                      <div>
-                        <span>Cảnh báo</span>
-                        <strong>
-                          {warnings}
-                          <small>nên kiểm tra</small>
-                        </strong>
-                      </div>
-                    </button>
-                    <button
-                      className="stat-card clickable"
-                      onClick={() => setView("rules")}
-                    >
-                      <div className="stat-icon success">
-                        <ShieldCheck size={21} />
-                      </div>
-                      <div>
-                        <span>Quy tắc đang bật</span>
-                        <strong>
-                          {enabledRules}
-                          <small>
-                            từ{" "}
-                            {plugins.filter((p) => config.plugins[p.id]).length}{" "}
-                            plugins
-                          </small>
-                        </strong>
-                      </div>
-                      <ArrowRight size={15} className="stat-arrow" />
-                    </button>
-                  </section>
                   <div className="review-grid">
                     <DocumentPane
                       doc={doc}
+                      source={source!}
+                      expanded={readerExpanded}
+                      onToggleExpanded={() => setReaderExpanded((v) => !v)}
                       issue={selectedIssue}
                       focusedNode={focusedNode}
                       onFocus={(nodeId) => focusNode(nodeId)}
@@ -658,7 +638,9 @@ function App() {
                           role="group"
                           aria-label="Lọc mức độ"
                         >
-                          {(["all", "error", "warning"] as const).map((f) => (
+                          {(
+                            ["all", "error", "warning", "ignored"] as const
+                          ).map((f) => (
                             <button
                               key={f}
                               className={filter === f ? "selected" : ""}
@@ -669,13 +651,17 @@ function App() {
                                 ? "Tất cả"
                                 : f === "error"
                                   ? "Lỗi"
-                                  : "Cảnh báo"}
+                                  : f === "warning"
+                                    ? "Cảnh báo"
+                                    : "Đã bỏ qua"}
                               <span>
                                 {f === "all"
                                   ? issues.length
                                   : f === "error"
                                     ? errors
-                                    : warnings}
+                                    : f === "warning"
+                                      ? warnings
+                                      : ignoredIssues.length}
                               </span>
                             </button>
                           ))}
@@ -713,6 +699,8 @@ function App() {
                               (p) => p.id === issue.nodeId,
                             )!}
                             active={selected === issue.id}
+                            ignored={filter === "ignored"}
+                            onToggleIgnore={() => toggleIgnored(issue)}
                             onClick={() => focusNode(issue.nodeId, issue.id)}
                           />
                         ))}
@@ -720,18 +708,30 @@ function App() {
                           <div className="empty-results">
                             <CircleCheck size={36} />
                             <h3>
-                              {issues.length
-                                ? "Không có kết quả phù hợp"
-                                : enabledRules
-                                  ? "Không phát hiện vấn đề"
-                                  : "Chưa bật quy tắc nào"}
+                              {filter === "ignored"
+                                ? ignoredIssues.length
+                                  ? "Không có kết quả phù hợp"
+                                  : "Chưa có vấn đề đã bỏ qua"
+                                : issues.length
+                                  ? "Không có kết quả phù hợp"
+                                  : enabledRules
+                                    ? ignoredIssues.length
+                                      ? "Đã rà soát hết vấn đề"
+                                      : "Không phát hiện vấn đề"
+                                    : "Chưa bật quy tắc nào"}
                             </h3>
                             <p>
-                              {issues.length
-                                ? "Thử đổi bộ lọc hoặc từ khóa tìm kiếm."
-                                : enabledRules
-                                  ? "Tài liệu phù hợp với các quy tắc đã bật trên dữ liệu đọc được."
-                                  : "Bật plugin hoặc quy tắc để kiểm tra tài liệu."}
+                              {filter === "ignored"
+                                ? ignoredIssues.length
+                                  ? "Thử đổi từ khóa tìm kiếm."
+                                  : "Những lỗi hoặc cảnh báo bạn bỏ qua sẽ xuất hiện ở đây để khôi phục."
+                                : issues.length
+                                  ? "Thử đổi bộ lọc hoặc từ khóa tìm kiếm."
+                                  : enabledRules
+                                    ? ignoredIssues.length
+                                      ? `${ignoredIssues.length} vấn đề đã được bạn bỏ qua; tài liệu chưa được sửa.`
+                                      : "Không phát hiện vấn đề theo quy tắc đã bật trên dữ liệu đọc được."
+                                    : "Bật plugin hoặc quy tắc để kiểm tra tài liệu."}
                             </p>
                           </div>
                         )}
@@ -1167,63 +1167,78 @@ function IssueCard({
   issue,
   paragraph,
   active,
+  ignored,
+  onToggleIgnore,
   onClick,
 }: {
   issue: Diagnostic;
   paragraph: Paragraph;
   active: boolean;
+  ignored: boolean;
+  onToggleIgnore: () => void;
   onClick: () => void;
 }) {
   return (
-    <button
-      className={`issue-card ${active ? "active" : ""}`}
+    <article
+      className={`issue-card ${active ? "active" : ""} ${ignored ? "ignored" : ""}`}
       id={`issue-${issue.id}`}
-      onClick={onClick}
-      aria-pressed={active}
     >
-      <div className={`issue-status ${issue.severity}`}>
-        {issue.severity === "error" ? (
-          <CircleAlert size={17} />
-        ) : (
-          <Info size={17} />
-        )}
-      </div>
-      <div className="issue-body">
-        <div className="issue-title">
-          <h3>{issue.message}</h3>
-          <span className={`severity ${issue.severity}`}>
-            {issue.severity === "error" ? "Lỗi" : "Cảnh báo"}
-          </span>
+      <button className="issue-select" onClick={onClick} aria-pressed={active}>
+        <div className={`issue-status ${issue.severity}`}>
+          {issue.severity === "error" ? (
+            <CircleAlert size={17} />
+          ) : (
+            <Info size={17} />
+          )}
         </div>
-        <div className="issue-location">
-          Đoạn {paragraph.index + 1}
-          {paragraph.inTable ? " · Trong bảng" : ""}
-          <span>·</span>
-          <code>
-            {issue.ruleId.replace("standard/", "").replace("academic/", "")}
-          </code>
-        </div>
-        <p className="issue-excerpt">“{paragraph.text}”</p>
-        <div className="comparison">
-          <span>
-            <span className="comparison-label">Thực tế</span>
-            {issue.actual}
-          </span>
-          <ArrowRight size={13} />
-          <span className="expected">
-            <span className="comparison-label">Yêu cầu</span>
-            {issue.expected}
-          </span>
-        </div>
-        {active && (
-          <div className="suggestion">
-            <span>Gợi ý sửa</span>
-            {issue.suggestion}
+        <div className="issue-body">
+          <div className="issue-title">
+            <h3>{issue.message}</h3>
+            <span className={`severity ${issue.severity}`}>
+              {issue.severity === "error" ? "Lỗi" : "Cảnh báo"}
+            </span>
           </div>
-        )}
+          <div className="issue-location">
+            Đoạn {paragraph.index + 1}
+            {paragraph.inTable ? " · Trong bảng" : ""}
+            <span>·</span>
+            <code>
+              {issue.ruleId.replace("standard/", "").replace("academic/", "")}
+            </code>
+          </div>
+          <p className="issue-excerpt">“{paragraph.text}”</p>
+          <div className="comparison">
+            <span>
+              <span className="comparison-label">Thực tế</span>
+              {issue.actual}
+            </span>
+            <ArrowRight size={13} />
+            <span className="expected">
+              <span className="comparison-label">Yêu cầu</span>
+              {issue.expected}
+            </span>
+          </div>
+          {active && (
+            <div className="suggestion">
+              <span>Gợi ý sửa</span>
+              {issue.suggestion}
+            </div>
+          )}
+        </div>
+        <ChevronRight className="issue-arrow" size={16} />
+      </button>
+      <div className="issue-actions">
+        <button
+          className="ignore-button"
+          onClick={onToggleIgnore}
+          aria-label={`${ignored ? "Khôi phục" : "Bỏ qua"}: ${issue.message}, đoạn ${paragraph.index + 1}`}
+        >
+          {ignored ? <RotateCcw size={13} /> : <EyeOff size={13} />}
+          {ignored ? "Khôi phục" : "Bỏ qua vấn đề này"}
+        </button>
+        {ignored && <span>Đã xác nhận là chủ ý</span>}
       </div>
-      <ChevronRight className="issue-arrow" size={16} />
-    </button>
+    </article>
   );
 }
 

@@ -11,7 +11,7 @@ test("sample document, diagnostic navigation, filters, search and export", async
   ).toBeVisible();
   await page.getByRole("button", { name: "Dùng tài liệu mẫu" }).click();
   await expect(page.locator(".issue-card")).toHaveCount(6);
-  await page.getByRole("button", { name: /Tiêu đề nhảy cấp/ }).click();
+  await page.getByRole("button", { name: /^Tiêu đề nhảy cấp/ }).click();
   await expect(page.getByTestId("paragraph-3")).toHaveClass(/highlighted/);
   await expect(page.locator(".suggestion")).toContainText("Heading 2");
   await page
@@ -236,7 +236,7 @@ for (const viewport of [
     expect(metrics.paperRight).toBeLessThan(metrics.issuesLeft);
     expect(metrics.panelHeight).toBeGreaterThan(viewport.height * 0.6);
     await page
-      .getByRole("button", { name: /Mục chưa có nội dung văn bản/ })
+      .getByRole("button", { name: /^Mục chưa có nội dung văn bản/ })
       .click();
     await expect(page.getByTestId("paragraph-11")).toHaveClass(/highlighted/);
     await expect
@@ -269,31 +269,31 @@ test("desktop outline, zoom, keyboard navigation and help work together", async 
   await expect(page.getByTestId("paragraph-11")).toHaveClass(/highlighted/);
   await page
     .getByLabel("Thu phóng tài liệu", { exact: true })
-    .selectOption("125");
-  expect(
-    await page
-      .getByTestId("paragraph-2")
-      .evaluate((el) => getComputedStyle(el).fontSize),
-  ).toBe("20px");
+    .selectOption("150");
+  await expect(page.getByTestId("paragraph-2")).toBeAttached();
+  await expect(page.locator(".docx-render-host")).toHaveCSS("zoom", "1.5");
+  await expect(
+    page.getByTestId("paragraph-2").locator("span").last(),
+  ).toHaveCSS("font-size", "16px");
   await expect(
     page.getByRole("button", { name: "Phóng to", exact: true }),
   ).toBeDisabled();
   await page.getByRole("button", { name: "Thu nhỏ", exact: true }).click();
   await expect(
     page.getByLabel("Thu phóng tài liệu", { exact: true }),
-  ).toHaveValue("110");
+  ).toHaveValue("125");
   await page.keyboard.press("Alt+ArrowDown");
-  await expect(page.locator(".issue-card").nth(0)).toHaveAttribute(
+  await expect(page.locator(".issue-select").nth(0)).toHaveAttribute(
     "aria-pressed",
     "true",
   );
   await page.keyboard.press("Alt+ArrowDown");
-  await expect(page.locator(".issue-card").nth(1)).toHaveAttribute(
+  await expect(page.locator(".issue-select").nth(1)).toHaveAttribute(
     "aria-pressed",
     "true",
   );
   await page.keyboard.press("Alt+ArrowUp");
-  await expect(page.locator(".issue-card").nth(0)).toHaveAttribute(
+  await expect(page.locator(".issue-select").nth(0)).toHaveAttribute(
     "aria-pressed",
     "true",
   );
