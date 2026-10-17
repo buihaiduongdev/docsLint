@@ -1,0 +1,11 @@
+node_modules
+.local
+.git
+.agents
+dist
+test-results
+playwright-report
+fonts/*
+*.tsbuildinfo
+.env
+.env.*

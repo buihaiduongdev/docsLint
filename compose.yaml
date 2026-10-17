@@ -1,0 +1,45 @@
+services:
+  office:
+    image: onlyoffice/documentserver:9.0.4
+    restart: unless-stopped
+    environment:
+      JWT_ENABLED: "true"
+      JWT_SECRET: ${JWT_SECRET:?Run npm run office:up first}
+      JWT_IN_BODY: "true"
+      ALLOW_PRIVATE_IP_ADDRESS: "true"
+      ALLOW_META_IP_ADDRESS: "false"
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    ports:
+      - "127.0.0.1:8082:80"
+    volumes:
+      - office-data:/var/www/onlyoffice/Data
+      - office-cache:/var/lib/onlyoffice
+      - ./fonts:/usr/share/fonts/truetype/docslint:ro
+    shm_size: 256mb
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      JWT_SECRET: ${JWT_SECRET}
+      ONLYOFFICE_URL: http://office
+      APP_INTERNAL_URL: http://app:3001
+      DATA_DIR: /data
+      PORT: "3001"
+    ports:
+      - "127.0.0.1:3000:3001"
+    volumes:
+      - documents:/data
+    depends_on:
+      office:
+        condition: service_healthy
+volumes:
+  documents:
+  office-data:
+  office-cache:

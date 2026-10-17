@@ -1,86 +1,117 @@
 # docsLint
 
-Prototype web kiểm tra định dạng và cấu trúc tài liệu **DOCX**, không dùng AI. File được đọc trong trình duyệt; không gửi tài liệu lên máy chủ. Cấu hình rule và lựa chọn bỏ qua được lưu trong `localStorage`, nội dung tài liệu chỉ giữ trong bộ nhớ của tab.
+Mở và **chỉnh sửa DOCX ngay trên web bằng ONLYOFFICE**, với sidebar kiểm tra quy tắc định dạng và cấu trúc. Chọn **Lưu & kiểm tra lại** để lưu DOCX đã sửa và cập nhật kết quả lint. Chọn **Tải DOCX** để lưu và tải bản đang chỉnh sửa.
 
-## Chạy thử
+ONLYOFFICE dựng trang tài liệu bằng trình soạn thảo Office, giữ bảng, ảnh, danh sách, header/footer và bố cục trang thay vì chuyển thành bản đọc HTML. Không bảo đảm khớp Microsoft Word từng pixel: font cần được cài trên máy chủ Office, các field hoặc bố cục phức tạp có thể khác Word. Đặt font có quyền sử dụng trong [fonts/](fonts/README.md) rồi khởi động lại Office.
 
-Yêu cầu Node.js 22+ và npm. Môi trường hiện tại đã kiểm thử bằng Node.js 24.
+## Chạy ứng dụng
+
+Yêu cầu **Node.js 22+**, npm và **Docker Compose**; khuyến nghị dành ít nhất 4 GB RAM cho ONLYOFFICE. Lần đầu tải image Office khá lớn và khởi động mất vài phút.
 
 ```sh
 npm ci
+npm run office:up
 npm run dev -- --port 5173 --strictPort
 ```
 
-Bấm **Dùng tài liệu mẫu** để kiểm tra một DOCX thực tế có 6 vấn đề cố ý tạo: 3 lỗi và 3 cảnh báo với cấu hình mặc định. Hoặc tải file `.docx` của bạn, tối đa 10 MB.
+Lệnh `office:up` tạo khóa JWT ngẫu nhiên trong `.local/office.env` và chạy ONLYOFFICE trên Docker. Không commit hoặc chia sẻ khóa này. `npm run dev` chạy API lưu tài liệu ở cổng 3001 cùng Vite ở cổng 5173. Nếu Office chưa sẵn sàng, ứng dụng hiển thị lỗi rõ ràng; không tự chuyển tài liệu về HTML.
 
-- Bấm lỗi để xem đoạn tương ứng và hướng dẫn sửa.
-- Chọn **Bỏ qua vấn đề này** nếu đó là chủ ý; khôi phục trong tab **Đã bỏ qua**. Lựa chọn áp dụng cho từng vấn đề, được nhớ khi mở lại cùng nội dung file trên trình duyệt này. File thay đổi hoặc yêu cầu rule thay đổi sẽ được kiểm tra lại.
-- Kết quả JSON tách `issues` cần xử lý và `ignoredIssues` đã bỏ qua. Bỏ qua không sửa tài liệu hoặc tắt rule cho file khác.
-- Trong **Bộ quy tắc**, đổi font, cỡ chữ, căn lề, giãn dòng hoặc mức độ. Nhấn Enter/rời ô để áp dụng giá trị.
-- Trong **Plugins**, bật/tắt Standard và Academic.
-- Nhập/xuất JSON để chia sẻ preset; xuất kết quả kiểm tra dưới dạng JSON.
-- Nút khôi phục mặc định trong Bộ quy tắc đưa cấu hình về ban đầu.
+Chạy cả ứng dụng và Office bằng Docker, không cần giữ dev server:
 
-Giao diện ưu tiên PC: tài liệu bên trái và lỗi bên phải cuộn độc lập, thanh công cụ luôn hiển thị. Mở mục lục bằng nút ở góc trái bản đọc, chọn **Vừa chiều rộng** hoặc thu phóng từ 75% đến 150%, hoặc kéo DOCX mới vào vùng làm việc để thay tài liệu. Nút **Mở rộng vùng đọc** ẩn thanh điều hướng và thanh file để dành toàn bộ chiều cao màn hình cho tài liệu và sidebar; nhấn Esc để thu gọn. Đã kiểm tra bố cục ở 1280×720, 1440×900 và 1920×1080.
+```sh
+npm run stack:up
+```
 
-| Phím tắt      | Thao tác                                     |
-| ------------- | -------------------------------------------- |
-| `Ctrl/⌘ + O`  | Mở DOCX                                      |
-| `/`           | Tìm lỗi                                      |
-| `Alt + ↓ / ↑` | Lỗi tiếp theo / trước trong kết quả đang lọc |
-| `?`           | Xem phím tắt                                 |
-| `Esc`         | Đóng trợ giúp / thu gọn vùng đọc             |
+Ứng dụng dùng cổng **3000**, chỉ bind loopback theo mặc định. Dừng stack bằng `docker compose --env-file .local/office.env stop`; dữ liệu vẫn còn trong volumes. Không dùng `down -v` nếu cần giữ tài liệu đã lưu.
 
-Font Be Vietnam Pro được đóng gói cùng app, không gọi dịch vụ font bên ngoài. Bộ `Leonxlnx/taste-skill` được cài cục bộ cho Codex tại `.agents/skills/`, có nguồn và checksum trong `skills-lock.json`. Giao diện áp dụng hướng dẫn `redesign-existing-projects`.
+Kiểm tra dịch vụ:
 
-Skill thiết kế là công cụ phát triển tùy chọn, không cần để chạy ứng dụng. Thư mục `.agents/` được bỏ qua trong Git; cài lại bằng `npx skills add Leonxlnx/taste-skill --agent codex --yes` khi cần.
+```sh
+docker compose --env-file .local/office.env ps
+curl --fail http://127.0.0.1:5173/api/health
+# Với bản Docker: dùng cổng 3000 thay cho 5173.
+```
+
+Kết quả `officeReady: true` nghĩa là dịch vụ Office đã sẵn sàng. Cần Docker Desktop chạy Linux containers trên Windows/macOS. Với Linux, Compose đã cấu hình `host.docker.internal:host-gateway` để Office truy cập API của dev server.
+
+## Cách dùng
+
+1. Giữ lựa chọn mặc định **Soạn thảo Office** rồi chọn DOCX, tối đa 10 MB, hoặc dùng tài liệu mẫu.
+2. Chỉnh chữ, font, bảng, ảnh và bố cục ngay trong trình soạn thảo.
+3. Bấm **Lưu & kiểm tra lại**. Sidebar đọc lại chính DOCX vừa lưu; kết quả cũ được đánh dấu **Cần kiểm tra lại** trong lúc sửa. Các lựa chọn bỏ qua của bản cũ không tự áp dụng cho file đã thay đổi.
+4. Bấm **Tải DOCX** để lấy bản hiện tại. Sau khi tải lại trang, chọn **Mở lại tài liệu đã lưu gần nhất** để tiếp tục.
+
+Có thể đổi sang Bộ quy tắc hoặc Plugins rồi quay lại mà không đóng phiên soạn thảo. Khi đổi tài liệu có thay đổi chưa lưu, ứng dụng nhắc quay lại lưu trước. Mở lại tạo phiên mới từ bản DOCX đã lưu; prototype chỉ hỗ trợ một phiên chỉnh sửa cho mỗi tài liệu, không dùng đồng thời nhiều tab để sửa cùng file. Nút Save/Ctrl+S của Office đồng bộ với dịch vụ Office; nút **Lưu & kiểm tra lại** của docsLint mới cập nhật kết quả lint. Luôn dùng nút này trước khi rời phiên nếu cần bản lưu và kết quả mới nhất.
+
+- Chọn **Bỏ qua vấn đề này** nếu đó là chủ ý; khôi phục trong **Đã bỏ qua**. Quyết định gắn với nội dung file, rule và yêu cầu đang áp dụng.
+- Kết quả JSON tách `issues` và `ignoredIssues`; `snapshot: "last-checked"` cho biết kết quả thuộc bản đã kiểm tra trước khi sửa tiếp.
+- Trong **Bộ quy tắc**, đổi font, cỡ chữ, căn lề, giãn dòng hoặc mức độ; nhập/xuất preset JSON để chia sẻ.
+- Trong **Plugins**, bật/tắt Standard và Academic. Xem [hướng dẫn viết plugin](public/plugin-guide.md).
+- Nút **Mở rộng vùng đọc** dành toàn bộ chiều cao màn hình cho soạn thảo và sidebar.
+- Trong chế độ Office, chọn lỗi để đọc đoạn trích/hướng dẫn; dùng Tìm kiếm của Office để đến đoạn đó. Chưa có liên kết chọn đoạn tự động giữa sidebar và editor.
+
+**Chỉ đọc nhanh trên máy** là chế độ phụ, chọn rõ ràng trước khi nhập file. Chế độ này xử lý trong trình duyệt bằng `docx-preview`, không chỉnh sửa, có thể khác bố cục Word; hỗ trợ bấm lỗi để đến đoạn, mục lục và thu phóng.
+
+## Tài liệu được lưu ở đâu?
+
+Chế độ Office gửi tài liệu đến **dịch vụ docsLint và ONLYOFFICE do bạn tự chạy**; không dùng máy chủ Office công cộng. Dev lưu DOCX và metadata trong `.local/documents/`. Bản Docker lưu trong volume `documents`; ONLYOFFICE có các volumes dữ liệu/cache riêng. Đóng tab không xóa file. Máy chủ giới hạn 100 tài liệu, mỗi file 10 MB; quản trị viên cần dọn các thư mục tài liệu không dùng khi đầy.
+
+Trình duyệt lưu cấu hình, lựa chọn bỏ qua và khóa mở lại tài liệu gần nhất trong `localStorage`. API dùng khóa truy cập riêng cho mỗi tài liệu, config/callback Office có chữ ký JWT. Khóa mở lại và file metadata là dữ liệu riêng tư. Prototype phục vụ môi trường riêng; chưa có tài khoản, phân quyền người dùng hoặc lịch sử phiên bản. Khi đưa lên Internet cần đặt sau lớp đăng nhập và HTTPS. Backend và Office phải truy cập được nhau; không mở trực tiếp cổng Office ra ngoài nếu không cần.
+
+Các cấu hình backend tùy chọn:
+
+| Biến               | Mặc định dev                       | Ý nghĩa                            |
+| ------------------ | ---------------------------------- | ---------------------------------- |
+| `PORT`             | `3001`                             | Cổng API/static server             |
+| `DATA_DIR`         | `.local/documents`                 | Nơi lưu DOCX và metadata           |
+| `ONLYOFFICE_URL`   | `http://127.0.0.1:8082`            | Địa chỉ Office mà backend truy cập |
+| `APP_INTERNAL_URL` | `http://host.docker.internal:3001` | Địa chỉ API mà Office truy cập     |
+| `JWT_SECRET`       | Đọc `.local/office.env`            | Khóa chung giữa backend và Office  |
+
+Trình duyệt truy cập Office qua `/office/` trên cùng origin với ứng dụng, hỗ trợ WebSocket qua proxy. Reverse proxy HTTPS bên ngoài phải truyền `Host`, `X-Forwarded-Proto` và hỗ trợ WebSocket. Các cổng và network của Compose được cấu hình sẵn cho chạy local. Nếu môi trường dùng CA riêng và đã đặt `NODE_EXTRA_CA_CERTS`, script `stack:up` truyền CA đó vào bước build qua BuildKit secret; vẫn kiểm tra TLS và không đóng gói CA vào image.
 
 ## Kiến trúc
 
 ```text
-DOCX → parser/docx.ts → DocumentModel → core/engine.ts → Diagnostics → React UI
-                                           ↑
-                              plugins + preset JSON
+DOCX → ONLYOFFICE (xem / sửa) → DOCX đã lưu → parser → rule plugins → sidebar
+               ↕                    ↕
+       Office tự lưu trữ       docsLint API + kho file
 ```
 
-- `src/parser/docx.ts`: đọc XML trong DOCX, giải quyết style mặc định, `basedOn`, theme font, character style và định dạng trực tiếp. Cung cấp đoạn văn, heading và danh sách với ID vị trí ổn định trong lần đọc.
-- `src/components/DocumentPane.tsx` và `src/parser/preview.ts`: dựng DOCX bằng `docx-preview` trong vùng CSS riêng, giữ định dạng chữ, bảng, ảnh, danh sách và header/footer. Bookmark trên bản sao trong bộ nhớ liên kết lỗi với đúng đoạn, kể cả nội dung trùng nhau; không thay đổi file gốc.
-- `src/core/ignored.ts`: định danh file bằng SHA-256 và lưu lựa chọn bỏ qua theo từng vấn đề.
-- `src/core/types.ts`: hợp đồng Document Model, rule, plugin và cấu hình.
-- `src/core/engine.ts`: chạy rule đang bật, kiểm tra preset và tổng hợp diagnostic.
-- `src/plugins/standard.ts`: 5 rule cho heading, font, cỡ chữ, căn lề, giãn dòng.
-- `src/plugins/academic.ts`: plugin độc lập mẫu, cảnh báo mục chưa có văn bản.
-- `src/plugins/index.ts`: nơi đăng ký thêm plugin.
-
-Xem [hướng dẫn viết plugin](public/plugin-guide.md). Plugin TypeScript được đóng gói cùng ứng dụng; JSON chỉ chứa cấu hình, không thực thi mã. Chưa có tải plugin động hoặc marketplace.
+- `server/app.mjs`: upload DOCX, tạo config editor, xác thực callback, lưu/tải snapshot, proxy Office và phục vụ bản build.
+- `server/security.mjs`: JWT và giới hạn tải snapshot về đúng cache tài liệu trên Office của mình; không fetch hostname tùy ý từ client.
+- `src/components/OfficePane.tsx`: phiên soạn thảo, trạng thái chỉnh sửa, lưu/kiểm tra/tải DOCX.
+- `src/parser/docx.ts`: đọc OOXML thành DocumentModel; xử lý style kế thừa, theme font, character style và định dạng trực tiếp.
+- `src/core/engine.ts`, `src/plugins/`: plugin lint và preset JSON. Plugin TypeScript được đóng gói cùng ứng dụng; JSON không thực thi mã. Chưa có marketplace/tải plugin động.
+- `src/components/DocumentPane.tsx`, `src/parser/preview.ts`: chế độ đọc nhanh cục bộ.
 
 ## Kiểm thử
 
 ```sh
 npm test
+npm run test:server
 npm run build
+npm run office:up
 
-# Cloud environment này đã có Chromium:
+# Cloud environment này có Chromium:
 CHROMIUM_PATH=/usr/bin/chromium npm run test:e2e
 
-# Máy chưa có trình duyệt cho Playwright:
+# Máy chưa có browser của Playwright:
 npx playwright install chromium
 npm run test:e2e
 ```
 
-Test parser/engine kiểm tra DOCX thật, style kế thừa, font từ theme, numbering, bảng, tracked changes, dữ liệu lỗi, plugin và preset. E2E kiểm tra upload, sample, định dạng DOCX (font, màu, bảng, hình, numbering, header), điều hướng đúng đoạn trùng nội dung, bỏ qua/khôi phục và lưu lựa chọn, lọc, export, cấu hình, plugin, mở rộng vùng đọc và bố cục PC/mobile. Playwright tự chạy dev server nếu cổng 5173 chưa có server.
+E2E Office dùng **Document Server thật**: gõ nội dung, lưu, đọc DOCX tải về, kiểm tra kết quả lint và mở lại tài liệu. Test bảng/ảnh/header/numbering kiểm tra các thành phần còn trong DOCX sau khi sửa và xuất. Các bài đọc nhanh vẫn kiểm tra định dạng HTML và điều hướng của chế độ phụ. API tests kiểm tra chữ ký, quyền tải file, callback, snapshot và tính bền vững qua lần khởi động lại.
 
-`npm run sample` tái tạo tài liệu `public/sample-report.docx`; file mẫu đã được đưa vào repository.
+`npm run sample` tái tạo tài liệu `public/sample-report.docx` có 6 vấn đề cố ý tạo. Chạy localhost hoặc HTTPS để dùng SHA-256 nhận diện nội dung file.
 
-## Phạm vi prototype
+## Phạm vi lint
 
-- Chỉ đọc OOXML `.docx` thông thường; không hỗ trợ `.doc`, PDF, tệp mã hóa hoặc Strict OOXML.
-- Đọc văn bản chính và đoạn trong bảng; các rule định dạng nội dung bỏ qua heading, danh sách và ô bảng. Giới hạn 5.000 đoạn và 24 MB XML sau giải nén.
-- Không suy đoán font/cỡ chữ/giãn dòng chưa đọc được. Không phát hiện được lỗi ở những thuộc tính thiếu dữ liệu; “không phát hiện vấn đề” chỉ áp dụng cho rule đang bật và dữ liệu đã đọc.
-- Chưa hỗ trợ đầy đủ conditional table styles, biến thể style cho từng hệ chữ, toggle style phức tạp hoặc textbox. Tracked deletions được bỏ qua; insertions được đọc như văn bản hiện tại.
-- Heading được nhận diện qua `outlineLvl` trong style hoặc định dạng trực tiếp. Chữ in đậm hay số mục gõ tay không tự trở thành heading.
-- Bản xem giữ định dạng DOCX nhưng không bảo đảm khớp Word từng pixel; font cần có trên máy và ngắt trang/bố cục phức tạp có thể khác Word. Không cung cấp số trang lint. Giới hạn bản xem 64 MB sau giải nén; nếu không dựng được, app báo lỗi và cho thử lại.
-- Chưa kiểm tra margin, header/footer, caption, tham chiếu, ngắt trang hoặc ngữ nghĩa; chưa tự sửa DOCX.
-- Academic kiểm tra văn bản trong mục và mục con. Mục chỉ có hình có thể sinh cảnh báo cần người dùng xem xét.
+- Lint đọc OOXML `.docx` thông thường, tối đa 5.000 đoạn và 24 MB XML; giới hạn giải nén bản xem/upload là 64 MB.
+- Kiểm tra văn bản chính và đoạn trong bảng. Rule định dạng nội dung bỏ qua heading, danh sách và ô bảng.
+- Chưa lint margin, header/footer, caption, tham chiếu, ngắt trang hoặc ngữ nghĩa, dù editor hiển thị/chỉnh sửa được các thành phần này.
+- Không suy đoán thuộc tính chưa đọc được; “không phát hiện vấn đề” chỉ áp dụng cho rule đang bật và dữ liệu đã đọc.
+- Chưa hỗ trợ đầy đủ conditional table styles, biến thể style cho từng hệ chữ, toggle style phức tạp hoặc textbox. Tracked deletions bỏ qua; insertions đọc như văn bản hiện tại.
+- Academic kiểm tra văn bản trong mục và mục con; mục chỉ có hình có thể sinh cảnh báo để tác giả cân nhắc bỏ qua.
 
-Chạy qua localhost hoặc HTTPS để trình duyệt hỗ trợ SHA-256 cho nhận diện file. Chưa cần tài khoản, database, API key hoặc dịch vụ bên ngoài.
+Font giao diện Be Vietnam Pro được đóng gói cùng app. Bộ `Leonxlnx/taste-skill` là công cụ thiết kế tùy chọn cho Codex trong `.agents/skills/`, có nguồn/checksum ở `skills-lock.json`; cài lại bằng `npx skills add Leonxlnx/taste-skill --agent codex --yes`. Không cần skill để chạy app.

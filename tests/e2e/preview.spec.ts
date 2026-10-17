@@ -1,6 +1,13 @@
 import { expect, test } from "@playwright/test";
 import { richDocx } from "../fixtures/rich-docx";
 
+// These checks cover the explicitly selected, browser-only quick reader.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() =>
+    localStorage.setItem("docslint-mode", "local"),
+  );
+});
+
 const upload = {
   name: "rich.docx",
   mimeType:

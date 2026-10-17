@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDownToLine,
   ArrowRight,
@@ -46,6 +46,14 @@ import {
 } from "./core/ignored";
 import { plugins } from "./plugins";
 import { DocumentPane } from "./components/DocumentPane";
+import { UnsavedDialog } from "./components/UnsavedDialog";
+import { OfficePane } from "./components/OfficePane";
+import {
+  createOfficeSession,
+  resumeOfficeSession,
+  officeBytes,
+  type OfficeSession,
+} from "./office/client";
 import { ShortcutHelp } from "./components/ShortcutHelp";
 
 type View = "review" | "rules" | "plugins";
@@ -72,6 +80,21 @@ const download = (filename: string, data: unknown) => {
 };
 
 function App() {
+  const [mode, setMode] = useState<"office" | "local">(() => {
+    try {
+      return localStorage.getItem("docslint-mode") === "local"
+        ? "local"
+        : "office";
+    } catch {
+      return "office";
+    }
+  });
+  const [officeSession, setOfficeSession] = useState<OfficeSession | null>(
+    null,
+  );
+  const [editorDirty, setEditorDirty] = useState(false);
+  const [editorBusy, setEditorBusy] = useState(false);
+  const [pendingFile, setPendingFile] = useState<{ file?: File } | null>(null);
   const [view, setView] = useState<View>("review");
   const [doc, setDoc] = useState<DocumentModel | null>(null);
   const [isSample, setIsSample] = useState(false);
@@ -136,7 +159,55 @@ function App() {
     return () => clearTimeout(id);
   }, [notice]);
 
-  const load = async (file?: File) => {
+  useEffect(() => {
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      if (editorDirty || editorBusy) {
+        event.preventDefault();
+        event.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", beforeUnload);
+    return () => window.removeEventListener("beforeunload", beforeUnload);
+  }, [editorDirty, editorBusy]);
+
+  const applySaved = async (bytes: ArrayBuffer, name: string) => {
+    const parsed = parseDocx(new Uint8Array(bytes), name);
+    const key = await documentKey(bytes);
+    setSource(bytes);
+    setFileKey(key);
+    setIgnoredKeys(readIgnored(key));
+    setDoc(parsed);
+    setSelected(null);
+    setFocusedNode(null);
+    setNotice("Đã lưu DOCX và kiểm tra lại nội dung mới.");
+  };
+  const resume = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const session = await resumeOfficeSession();
+      const bytes = await officeBytes(session);
+      await applySaved(bytes, session.name);
+      setOfficeSession(session);
+      setMode("office");
+      setView("review");
+      setIsSample(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Không mở lại được tài liệu.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const load = async (file?: File, discard = false) => {
+    if (editorBusy) {
+      setError("Đang lưu tài liệu. Hãy chờ lưu xong trước khi đổi tệp.");
+      return;
+    }
+    if (editorDirty && !discard) {
+      setPendingFile({ file });
+      return;
+    }
     const token = ++operation.current;
     setLoading(true);
     setError("");
@@ -162,7 +233,13 @@ function App() {
         file?.name ?? "Báo cáo nghiên cứu.docx",
       );
       const key = await documentKey(bytes);
+      const session =
+        mode === "office"
+          ? await createOfficeSession(bytes, parsed.name)
+          : null;
       if (operation.current !== token) return;
+      setOfficeSession(session);
+      setEditorDirty(false);
       setSource(bytes);
       setFileKey(key);
       setIgnoredKeys(readIgnored(key));
@@ -233,7 +310,7 @@ function App() {
     if (issue) focusNode(issue.nodeId, issue.id);
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (shortcutsOpen) return;
       const target = event.target as HTMLElement;
@@ -377,10 +454,14 @@ function App() {
         <div className="app-header-actions">
           <span
             className="local-badge"
-            title="File được xử lý trong trình duyệt, không tải lên máy chủ"
+            title={
+              mode === "office"
+                ? "DOCX được lưu trên dịch vụ docsLint và mở bằng ONLYOFFICE tự chạy"
+                : "Bản đọc nhanh xử lý trong trình duyệt"
+            }
           >
             <LockKeyhole size={14} />
-            Tài liệu chỉ ở máy bạn
+            {mode === "office" ? "Office tự lưu trữ" : "Chỉ đọc trên máy"}
           </span>
           <button
             className="icon-button shortcuts-trigger"
@@ -394,6 +475,16 @@ function App() {
           <span className="version-tag">v0.1</span>
         </div>
       </header>
+      {pendingFile && (
+        <UnsavedDialog
+          onCancel={() => setPendingFile(null)}
+          onContinue={() => {
+            const file = pendingFile.file;
+            setPendingFile(null);
+            void load(file, true);
+          }}
+        />
+      )}
       <ShortcutHelp
         open={shortcutsOpen}
         onClose={() => setShortcutsOpen(false)}
@@ -510,108 +601,164 @@ function App() {
             }}
           />
 
-          {view === "review" && (
-            <>
-              {!doc && (
-                <section
-                  className={`upload-card ${dragging ? "dragging" : ""}`}
-                  aria-label="Tải tài liệu"
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    setDragging(true);
-                  }}
-                  onDragLeave={() => setDragging(false)}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    setDragging(false);
-                    const file = e.dataTransfer.files[0];
-                    if (file) void load(file);
-                  }}
-                >
-                  <div className="upload-icon">
-                    {loading ? (
-                      <LoaderCircle className="spin" size={25} />
-                    ) : (
-                      <Upload size={25} />
+          <div className="review-content" hidden={view !== "review"}>
+            {!doc && (
+              <div className="editor-mode-picker">
+                <label>
+                  <input
+                    type="radio"
+                    name="editor-mode"
+                    checked={mode === "office"}
+                    onChange={() => {
+                      setMode("office");
+                      try {
+                        localStorage.setItem("docslint-mode", "office");
+                      } catch {}
+                    }}
+                  />{" "}
+                  Soạn thảo Office
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="editor-mode"
+                    checked={mode === "local"}
+                    onChange={() => {
+                      setMode("local");
+                      try {
+                        localStorage.setItem("docslint-mode", "local");
+                      } catch {}
+                    }}
+                  />{" "}
+                  Chỉ đọc nhanh trên máy
+                </label>
+                <p>
+                  {mode === "office"
+                    ? "Giữ bố cục trang và sửa trực tiếp. Tài liệu được lưu trên máy chủ docsLint của bạn."
+                    : "Bản xem HTML đơn giản, không chỉnh sửa và có thể khác bố cục Word."}
+                </p>
+                {mode === "office" && (
+                  <button
+                    className="button text-button"
+                    disabled={loading}
+                    onClick={() => void resume()}
+                  >
+                    Mở lại tài liệu đã lưu gần nhất
+                  </button>
+                )}
+              </div>
+            )}
+            {!doc && (
+              <section
+                className={`upload-card ${dragging ? "dragging" : ""}`}
+                aria-label="Tải tài liệu"
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDragging(true);
+                }}
+                onDragLeave={() => setDragging(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragging(false);
+                  const file = e.dataTransfer.files[0];
+                  if (file) void load(file);
+                }}
+              >
+                <div className="upload-icon">
+                  {loading ? (
+                    <LoaderCircle className="spin" size={25} />
+                  ) : (
+                    <Upload size={25} />
+                  )}
+                </div>
+                <div className="upload-copy">
+                  <h2>
+                    {loading
+                      ? "Đang đọc và kiểm tra tài liệu…"
+                      : "Thả tài liệu vào đây để bắt đầu"}
+                  </h2>
+                  <p>
+                    Định dạng .docx <span>•</span> Tối đa 10 MB <span>•</span>{" "}
+                    Không cần đăng nhập
+                  </p>
+                </div>
+                <div className="upload-actions">
+                  <button
+                    className="button text-button"
+                    disabled={loading}
+                    onClick={() => void load()}
+                  >
+                    <FileText size={15} />
+                    Dùng tài liệu mẫu
+                  </button>
+                  <button
+                    className="button primary"
+                    disabled={loading}
+                    onClick={() => fileInput.current?.click()}
+                  >
+                    <Plus size={18} /> Chọn tệp DOCX
+                  </button>
+                </div>
+              </section>
+            )}
+
+            {doc ? (
+              <>
+                <div className="document-bar">
+                  <div className="file-mini">
+                    <FileText size={18} />
+                    <strong title={doc.name}>{doc.name}</strong>
+                    {isSample && (
+                      <span className="sample-tag">TÀI LIỆU MẪU</span>
                     )}
+                    <span className="file-meta">
+                      {doc.paragraphs.length} đoạn ·{" "}
+                      {doc.wordCount.toLocaleString("vi-VN")} từ
+                    </span>
                   </div>
-                  <div className="upload-copy">
-                    <h2>
-                      {loading
-                        ? "Đang đọc và kiểm tra tài liệu…"
-                        : "Thả tài liệu vào đây để bắt đầu"}
-                    </h2>
-                    <p>
-                      Định dạng .docx <span>•</span> Tối đa 10 MB <span>•</span>{" "}
-                      Không cần đăng nhập
-                    </p>
-                  </div>
-                  <div className="upload-actions">
+                  <div className="document-actions">
                     <button
-                      className="button text-button"
-                      disabled={loading}
-                      onClick={() => void load()}
-                    >
-                      <FileText size={15} />
-                      Dùng tài liệu mẫu
-                    </button>
-                    <button
-                      className="button primary"
+                      className="button secondary"
                       disabled={loading}
                       onClick={() => fileInput.current?.click()}
                     >
-                      <Plus size={18} /> Chọn tệp DOCX
+                      {loading ? (
+                        <LoaderCircle size={15} className="spin" />
+                      ) : (
+                        <Upload size={15} />
+                      )}
+                      Đổi tài liệu
+                    </button>
+                    <button
+                      className="button primary export"
+                      onClick={() =>
+                        download(
+                          `${doc.name.replace(/\.docx$/i, "")}-lint.json`,
+                          {
+                            document: doc.name,
+                            snapshot: editorDirty ? "last-checked" : "current",
+                            config,
+                            issues,
+                            ignoredIssues,
+                          },
+                        )
+                      }
+                    >
+                      <ArrowDownToLine size={15} /> Xuất kết quả
                     </button>
                   </div>
-                </section>
-              )}
-
-              {doc ? (
-                <>
-                  <div className="document-bar">
-                    <div className="file-mini">
-                      <FileText size={18} />
-                      <strong title={doc.name}>{doc.name}</strong>
-                      {isSample && (
-                        <span className="sample-tag">TÀI LIỆU MẪU</span>
-                      )}
-                      <span className="file-meta">
-                        {doc.paragraphs.length} đoạn ·{" "}
-                        {doc.wordCount.toLocaleString("vi-VN")} từ
-                      </span>
-                    </div>
-                    <div className="document-actions">
-                      <button
-                        className="button secondary"
-                        disabled={loading}
-                        onClick={() => fileInput.current?.click()}
-                      >
-                        {loading ? (
-                          <LoaderCircle size={15} className="spin" />
-                        ) : (
-                          <Upload size={15} />
-                        )}
-                        Đổi tài liệu
-                      </button>
-                      <button
-                        className="button primary export"
-                        onClick={() =>
-                          download(
-                            `${doc.name.replace(/\.docx$/i, "")}-lint.json`,
-                            {
-                              document: doc.name,
-                              config,
-                              issues,
-                              ignoredIssues,
-                            },
-                          )
-                        }
-                      >
-                        <ArrowDownToLine size={15} /> Xuất kết quả
-                      </button>
-                    </div>
-                  </div>
-                  <div className="review-grid">
+                </div>
+                <div className="review-grid">
+                  {officeSession ? (
+                    <OfficePane
+                      session={officeSession}
+                      expanded={readerExpanded}
+                      onToggleExpanded={() => setReaderExpanded((v) => !v)}
+                      onSaved={applySaved}
+                      onDirty={setEditorDirty}
+                      onBusy={setEditorBusy}
+                    />
+                  ) : (
                     <DocumentPane
                       doc={doc}
                       source={source!}
@@ -621,26 +768,26 @@ function App() {
                       focusedNode={focusedNode}
                       onFocus={(nodeId) => focusNode(nodeId)}
                     />
-                    <section className="panel issues-panel">
-                      <div className="panel-heading">
-                        <h2>
-                          <ListChecks size={18} />
-                          Kết quả kiểm tra{" "}
-                          <span className="count-pill">{issues.length}</span>
-                        </h2>
-                        <span className="live-indicator">
-                          <i /> Đã cập nhật
-                        </span>
-                      </div>
-                      <div className="issue-toolbar">
-                        <div
-                          className="filter-tabs"
-                          role="group"
-                          aria-label="Lọc mức độ"
-                        >
-                          {(
-                            ["all", "error", "warning", "ignored"] as const
-                          ).map((f) => (
+                  )}
+                  <section className="panel issues-panel">
+                    <div className="panel-heading">
+                      <h2>
+                        <ListChecks size={18} />
+                        Kết quả kiểm tra{" "}
+                        <span className="count-pill">{issues.length}</span>
+                      </h2>
+                      <span className="live-indicator">
+                        <i /> {editorDirty ? "Cần kiểm tra lại" : "Đã cập nhật"}
+                      </span>
+                    </div>
+                    <div className="issue-toolbar">
+                      <div
+                        className="filter-tabs"
+                        role="group"
+                        aria-label="Lọc mức độ"
+                      >
+                        {(["all", "error", "warning", "ignored"] as const).map(
+                          (f) => (
                             <button
                               key={f}
                               className={filter === f ? "selected" : ""}
@@ -664,195 +811,202 @@ function App() {
                                       : ignoredIssues.length}
                               </span>
                             </button>
-                          ))}
-                        </div>
-                        <div className="search-box">
-                          <Search size={15} />
-                          <input
-                            ref={searchInput}
-                            aria-label="Tìm lỗi"
-                            placeholder="Tìm lỗi, quy tắc…"
-                            value={search}
-                            onChange={(e) => setSearch(e.target.value)}
-                          />
-                          {!search && <kbd>/</kbd>}
-                          {search && (
-                            <button
-                              aria-label="Xóa tìm kiếm"
-                              onClick={() => setSearch("")}
-                            >
-                              <X size={13} />
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                      <div
-                        className="issue-list"
-                        tabIndex={0}
-                        aria-label="Danh sách lỗi"
-                      >
-                        {visible.map((issue) => (
-                          <IssueCard
-                            key={issue.id}
-                            issue={issue}
-                            paragraph={doc.paragraphs.find(
-                              (p) => p.id === issue.nodeId,
-                            )!}
-                            active={selected === issue.id}
-                            ignored={filter === "ignored"}
-                            onToggleIgnore={() => toggleIgnored(issue)}
-                            onClick={() => focusNode(issue.nodeId, issue.id)}
-                          />
-                        ))}
-                        {!visible.length && (
-                          <div className="empty-results">
-                            <CircleCheck size={36} />
-                            <h3>
-                              {filter === "ignored"
-                                ? ignoredIssues.length
-                                  ? "Không có kết quả phù hợp"
-                                  : "Chưa có vấn đề đã bỏ qua"
-                                : issues.length
-                                  ? "Không có kết quả phù hợp"
-                                  : enabledRules
-                                    ? ignoredIssues.length
-                                      ? "Đã rà soát hết vấn đề"
-                                      : "Không phát hiện vấn đề"
-                                    : "Chưa bật quy tắc nào"}
-                            </h3>
-                            <p>
-                              {filter === "ignored"
-                                ? ignoredIssues.length
-                                  ? "Thử đổi từ khóa tìm kiếm."
-                                  : "Những lỗi hoặc cảnh báo bạn bỏ qua sẽ xuất hiện ở đây để khôi phục."
-                                : issues.length
-                                  ? "Thử đổi bộ lọc hoặc từ khóa tìm kiếm."
-                                  : enabledRules
-                                    ? ignoredIssues.length
-                                      ? `${ignoredIssues.length} vấn đề đã được bạn bỏ qua; tài liệu chưa được sửa.`
-                                      : "Không phát hiện vấn đề theo quy tắc đã bật trên dữ liệu đọc được."
-                                    : "Bật plugin hoặc quy tắc để kiểm tra tài liệu."}
-                            </p>
-                          </div>
+                          ),
                         )}
                       </div>
-                      <div className="panel-footer issue-navigation">
-                        <span>
-                          {visible.length
-                            ? selectedIndex < 0
-                              ? `${visible.length} vấn đề · Chọn để xem`
-                              : `${selectedIndex + 1} / ${visible.length} vấn đề`
-                            : "Không có vấn đề"}
-                        </span>
-                        <span className="navigation-hint">Alt + ↑ / ↓</span>
-                        <button
-                          className="icon-button"
-                          aria-label="Lỗi trước"
-                          title="Lỗi trước (Alt + ↑)"
-                          disabled={!visible.length || selectedIndex === 0}
-                          onClick={() => moveIssue(-1)}
-                        >
-                          <ArrowUp size={16} />
-                        </button>
-                        <button
-                          className="icon-button"
-                          aria-label="Lỗi tiếp theo"
-                          title="Lỗi tiếp theo (Alt + ↓)"
-                          disabled={
-                            !visible.length ||
-                            selectedIndex === visible.length - 1
-                          }
-                          onClick={() => moveIssue(1)}
-                        >
-                          <ArrowDown size={16} />
-                        </button>
+                      <div className="search-box">
+                        <Search size={15} />
+                        <input
+                          ref={searchInput}
+                          aria-label="Tìm lỗi"
+                          placeholder="Tìm lỗi, quy tắc…"
+                          value={search}
+                          onChange={(e) => setSearch(e.target.value)}
+                        />
+                        {!search && <kbd>/</kbd>}
+                        {search && (
+                          <button
+                            aria-label="Xóa tìm kiếm"
+                            onClick={() => setSearch("")}
+                          >
+                            <X size={13} />
+                          </button>
+                        )}
                       </div>
-                    </section>
-                  </div>
-                  <div className="review-statusbar">
-                    <span>
-                      <CircleCheck size={13} />
-                      Đã kiểm tra · {enabledRules} quy tắc
-                    </span>
-                    <span>
-                      Chỉ kiểm tra dữ liệu đọc được · Chưa kiểm tra bố cục trang
-                    </span>
-                    <button onClick={() => setView("rules")}>
-                      <Settings2 size={13} />
-                      Tùy chỉnh quy tắc
-                      <ArrowRight size={12} />
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <section className="welcome-panel">
-                  <div className="welcome-visual">
-                    <div className="mini-paper">
-                      <div className="mini-line title" />
-                      <div className="mini-line" />
-                      <div className="mini-line short" />
-                      <div className="mini-highlight">
-                        <span />
-                        <Check size={14} />
-                      </div>
-                      <div className="mini-line" />
-                      <div className="mini-line short" />
                     </div>
-                    <span className="floating-check">
-                      <CheckCheck size={24} />
-                    </span>
-                  </div>
-                  <div className="welcome-copy">
-                    <span className="eyebrow">
-                      ÍT SỬA VẶT. NHIỀU TẬP TRUNG HƠN.
-                    </span>
-                    <h2>
-                      Một lượt kiểm tra,
-                      <br />
-                      bản báo cáo chỉn chu hơn.
-                    </h2>
-                    <p>
-                      Tìm nhanh tiêu đề nhảy cấp, font chữ không đồng nhất và
-                      những đoạn văn chưa đúng chuẩn.
-                    </p>
-                    <button
-                      className="button primary"
-                      disabled={loading}
-                      onClick={() => void load()}
+                    {officeSession && (
+                      <p className="office-lint-note">
+                        {editorDirty
+                          ? "Kết quả dưới đây thuộc bản đã kiểm tra. Chọn Lưu & kiểm tra lại để cập nhật sau khi sửa."
+                          : "Kết quả của bản đã lưu. Dùng Tìm kiếm trong trình soạn thảo để đến đoạn trích của lỗi."}
+                      </p>
+                    )}
+                    <div
+                      className="issue-list"
+                      tabIndex={0}
+                      aria-label="Danh sách lỗi"
                     >
-                      Khám phá với tài liệu mẫu <ArrowRight size={16} />
-                    </button>
-                    <span className="sample-hint">
-                      Tài liệu mẫu có sẵn lỗi để bạn thử ngay.
+                      {visible.map((issue) => (
+                        <IssueCard
+                          key={issue.id}
+                          issue={issue}
+                          paragraph={doc.paragraphs.find(
+                            (p) => p.id === issue.nodeId,
+                          )!}
+                          active={selected === issue.id}
+                          ignored={filter === "ignored"}
+                          onToggleIgnore={() => toggleIgnored(issue)}
+                          onClick={() => focusNode(issue.nodeId, issue.id)}
+                        />
+                      ))}
+                      {!visible.length && (
+                        <div className="empty-results">
+                          <CircleCheck size={36} />
+                          <h3>
+                            {filter === "ignored"
+                              ? ignoredIssues.length
+                                ? "Không có kết quả phù hợp"
+                                : "Chưa có vấn đề đã bỏ qua"
+                              : issues.length
+                                ? "Không có kết quả phù hợp"
+                                : enabledRules
+                                  ? ignoredIssues.length
+                                    ? "Đã rà soát hết vấn đề"
+                                    : "Không phát hiện vấn đề"
+                                  : "Chưa bật quy tắc nào"}
+                          </h3>
+                          <p>
+                            {filter === "ignored"
+                              ? ignoredIssues.length
+                                ? "Thử đổi từ khóa tìm kiếm."
+                                : "Những lỗi hoặc cảnh báo bạn bỏ qua sẽ xuất hiện ở đây để khôi phục."
+                              : issues.length
+                                ? "Thử đổi bộ lọc hoặc từ khóa tìm kiếm."
+                                : enabledRules
+                                  ? ignoredIssues.length
+                                    ? `${ignoredIssues.length} vấn đề đã được bạn bỏ qua; tài liệu chưa được sửa.`
+                                    : "Không phát hiện vấn đề theo quy tắc đã bật trên dữ liệu đọc được."
+                                  : "Bật plugin hoặc quy tắc để kiểm tra tài liệu."}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                    <div className="panel-footer issue-navigation">
+                      <span>
+                        {visible.length
+                          ? selectedIndex < 0
+                            ? `${visible.length} vấn đề · Chọn để xem`
+                            : `${selectedIndex + 1} / ${visible.length} vấn đề`
+                          : "Không có vấn đề"}
+                      </span>
+                      <span className="navigation-hint">Alt + ↑ / ↓</span>
+                      <button
+                        className="icon-button"
+                        aria-label="Lỗi trước"
+                        title="Lỗi trước (Alt + ↑)"
+                        disabled={!visible.length || selectedIndex === 0}
+                        onClick={() => moveIssue(-1)}
+                      >
+                        <ArrowUp size={16} />
+                      </button>
+                      <button
+                        className="icon-button"
+                        aria-label="Lỗi tiếp theo"
+                        title="Lỗi tiếp theo (Alt + ↓)"
+                        disabled={
+                          !visible.length ||
+                          selectedIndex === visible.length - 1
+                        }
+                        onClick={() => moveIssue(1)}
+                      >
+                        <ArrowDown size={16} />
+                      </button>
+                    </div>
+                  </section>
+                </div>
+                <div className="review-statusbar">
+                  <span>
+                    <CircleCheck size={13} />
+                    Đã kiểm tra · {enabledRules} quy tắc
+                  </span>
+                  <span>
+                    Chỉ kiểm tra dữ liệu đọc được · Chưa kiểm tra bố cục trang
+                  </span>
+                  <button onClick={() => setView("rules")}>
+                    <Settings2 size={13} />
+                    Tùy chỉnh quy tắc
+                    <ArrowRight size={12} />
+                  </button>
+                </div>
+              </>
+            ) : (
+              <section className="welcome-panel">
+                <div className="welcome-visual">
+                  <div className="mini-paper">
+                    <div className="mini-line title" />
+                    <div className="mini-line" />
+                    <div className="mini-line short" />
+                    <div className="mini-highlight">
+                      <span />
+                      <Check size={14} />
+                    </div>
+                    <div className="mini-line" />
+                    <div className="mini-line short" />
+                  </div>
+                  <span className="floating-check">
+                    <CheckCheck size={24} />
+                  </span>
+                </div>
+                <div className="welcome-copy">
+                  <span className="eyebrow">
+                    ÍT SỬA VẶT. NHIỀU TẬP TRUNG HƠN.
+                  </span>
+                  <h2>
+                    Một lượt kiểm tra,
+                    <br />
+                    bản báo cáo chỉn chu hơn.
+                  </h2>
+                  <p>
+                    Tìm nhanh tiêu đề nhảy cấp, font chữ không đồng nhất và
+                    những đoạn văn chưa đúng chuẩn.
+                  </p>
+                  <button
+                    className="button primary"
+                    disabled={loading}
+                    onClick={() => void load()}
+                  >
+                    Khám phá với tài liệu mẫu <ArrowRight size={16} />
+                  </button>
+                  <span className="sample-hint">
+                    Tài liệu mẫu có sẵn lỗi để bạn thử ngay.
+                  </span>
+                </div>
+                <div className="welcome-features">
+                  <div>
+                    <Braces size={19} />
+                    <span>
+                      <strong>Quy tắc minh bạch</strong>
+                      <small>Biết rõ vì sao cần sửa</small>
                     </span>
                   </div>
-                  <div className="welcome-features">
-                    <div>
-                      <Braces size={19} />
-                      <span>
-                        <strong>Quy tắc minh bạch</strong>
-                        <small>Biết rõ vì sao cần sửa</small>
-                      </span>
-                    </div>
-                    <div>
-                      <Plug size={19} />
-                      <span>
-                        <strong>Linh hoạt với plugin</strong>
-                        <small>Tùy chỉnh theo chuẩn của bạn</small>
-                      </span>
-                    </div>
-                    <div>
-                      <LockKeyhole size={19} />
-                      <span>
-                        <strong>Riêng tư từ đầu</strong>
-                        <small>Không lưu nội dung tài liệu</small>
-                      </span>
-                    </div>
+                  <div>
+                    <Plug size={19} />
+                    <span>
+                      <strong>Linh hoạt với plugin</strong>
+                      <small>Tùy chỉnh theo chuẩn của bạn</small>
+                    </span>
                   </div>
-                </section>
-              )}
-            </>
-          )}
+                  <div>
+                    <LockKeyhole size={19} />
+                    <span>
+                      <strong>Riêng tư từ đầu</strong>
+                      <small>Lưu trên dịch vụ bạn tự chạy</small>
+                    </span>
+                  </div>
+                </div>
+              </section>
+            )}
+          </div>
 
           {view === "rules" && (
             <>

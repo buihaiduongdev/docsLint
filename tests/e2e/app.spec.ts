@@ -1,5 +1,12 @@
 import { expect, test } from "@playwright/test";
 
+// These checks cover the explicitly selected, browser-only quick reader.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() =>
+    localStorage.setItem("docslint-mode", "local"),
+  );
+});
+
 test("sample document, diagnostic navigation, filters, search and export", async ({
   page,
 }) => {
